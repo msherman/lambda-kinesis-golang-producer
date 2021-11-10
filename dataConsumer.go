@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/aws/aws-lambda-go/lambda"
@@ -15,50 +14,22 @@ import (
 
 type Teams struct {
 	Copyright string `json:"copyright"`
-	Teams []team `json:"teams"`
+	Teams []Team `json:"teams"`
 }
-type team struct {
+type Team struct {
 	Id int `json:"id"`
 	Name string `json:"name"`
 	FirstYearOfPlay string `json:"firstYearOfPlay"`
 	Active bool `json:"active"`
 }
 
-func HandleRequest(ctx context.Context) (string, error) {
-	streamName := os.Getenv("STREAM")
-	if streamName == "" {
-		panic("No environment variable set. Set STREAM environment variable")
-	}
-	sess := session.Must(session.NewSession(&aws.Config{
-		Region: aws.String("us-east-1")},
-	))
+var STREAM_NAME string = ""
 
-	// Create kinesis service client
-	svc := kinesis.New(sess)
-	resp, err := http.Get("https://statsapi.web.nhl.com/api/v1/teams")
-	if err != nil {
-		return fmt.Sprintf("had an error %s", err.Error()), err
-	}
-	b, processErr := ioutil.ReadAll(resp.Body)
-	if processErr != nil {
-		return fmt.Sprintf("had process error %s", processErr.Error()), processErr
-	}
-	var nhlteams Teams
-	err = json.Unmarshal(b, &nhlteams)
-	if err != nil {
-		fmt.Println(err.Error())
-	}
-	var records kinesis.PutRecordsInput
-	records.StreamName = &streamName
-	for id, data := range nhlteams.Teams {
-		var record kinesis.PutRecordsRequestEntry
-		record.Data, err = json.Marshal(data)
-		fmt.Println(data)
-		idAsString := string(id)
-		record.PartitionKey = &idAsString
-		records.Records = append(records.Records, &record)
-	}
-	putRecordOutput, prErr :=  svc.PutRecords(&records)
+func HandleRequest() (string, error) {
+	nhlteams := getNHLTeamRecords()
+	svc := connectToKinesis()
+	records := buildPutRecordRequest(nhlteams)
+	putRecordOutput, prErr :=  svc.PutRecords(records)
 	if prErr != nil {
 		fmt.Println("kinesis failed")
 		fmt.Println(putRecordOutput.String())
@@ -66,8 +37,55 @@ func HandleRequest(ctx context.Context) (string, error) {
 	} else {
 		fmt.Println(putRecordOutput.String())
 	}
-	return fmt.Sprintf("Produced to stream: %s", streamName), nil
+	return fmt.Sprintf("Produced to stream: %s", STREAM_NAME), nil
 }
+
+func connectToKinesis() *kinesis.Kinesis {
+	STREAM_NAME = os.Getenv("STREAM")
+	if STREAM_NAME == "" {
+		panic("No environment variable set. Set STREAM environment variable")
+	}
+	sess := session.Must(session.NewSession(&aws.Config{
+		Region: aws.String("us-east-1")},
+	))
+
+	return kinesis.New(sess)
+}
+
+func getNHLTeamRecords() *Teams {
+	resp, err := http.Get("https://statsapi.web.nhl.com/api/v1/teams")
+	if err != nil {
+		panic(fmt.Sprintf("had an error %s", err.Error()))
+	}
+	b, processErr := ioutil.ReadAll(resp.Body)
+	if processErr != nil {
+		panic(fmt.Sprintf("had process error %s", processErr.Error()))
+	}
+	var nhlteams Teams
+	err = json.Unmarshal(b, &nhlteams)
+	if err != nil {
+		fmt.Println(err.Error())
+	}
+	return &nhlteams
+}
+
+func buildPutRecordRequest(nhlteams *Teams) *kinesis.PutRecordsInput {
+	var records kinesis.PutRecordsInput
+	var err error
+	records.StreamName = &STREAM_NAME
+	for id, data := range nhlteams.Teams {
+		var record kinesis.PutRecordsRequestEntry
+		record.Data, err = json.Marshal(data)
+		if err != nil {
+			panic(err)
+		}
+		idAsString := string(id)
+		record.PartitionKey = &idAsString
+		records.Records = append(records.Records, &record)
+	}
+	return &records
+}
+
 func main() {
 	lambda.Start(HandleRequest)
 }
